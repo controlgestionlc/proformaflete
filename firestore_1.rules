@@ -1,0 +1,41 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Solo usuarios autenticados (creados en Firebase Authentication)
+    function logueado() { return request.auth != null; }
+
+    // Contador de folio
+    match /config/folio {
+      allow read: if logueado();
+      allow create, update: if logueado()
+        && request.resource.data.ultimo is int
+        && request.resource.data.ultimo >= 0;
+      allow delete: if false;
+    }
+
+    // Resumen de proformas (lista del historial)
+    match /proformas/{folio} {
+      allow read: if logueado();
+      allow create: if logueado() && request.resource.data.folio is int;
+      // Solo se permite modificar los campos de factura
+      allow update: if logueado()
+        && request.resource.data.diff(resource.data).affectedKeys()
+           .hasOnly(['nFactura', 'fechaFactura', 'facturaRegistradaEn', 'facturaRegistradaPor']);
+      allow delete: if logueado();
+    }
+
+    // Detalle (líneas, guías y claves de registros)
+    match /proformas_detalle/{folio} {
+      allow read, create, delete: if logueado();
+      allow update: if false;
+    }
+
+    // Índice anti-duplicados: una entrada por registro del Excel
+    match /registros/{clave} {
+      allow read, delete: if logueado();
+      allow create: if logueado();   // set sobre doc existente = update → bloqueado
+      allow update: if false;
+    }
+  }
+}

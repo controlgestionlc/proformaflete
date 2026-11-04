@@ -711,7 +711,6 @@ function poblarControles() {
 /* ═══════════════ GENERAR (misma lógica de agrupación y cálculo) ═══════════════ */
 function generar() {
   if (!rowsNuevas.length) { status('No hay registros nuevos para generar.', 'err'); return; }
-  if (folioUltimo === null) { abrirConfig(true); return; }
   const semFilt  = document.getElementById('semsel').value;
   const concFilt = document.getElementById('concsel').value;
   const fecha    = document.getElementById('fecha').value.trim() || fmtFecha(new Date());
@@ -733,7 +732,12 @@ function generar() {
     else { const k = prov + '||' + sem; (grupos[k] = grupos[k] || []).push(r); }
   });
 
-  let lista = Object.values(grupos).map(rows => construirProforma(rows, fecha, mes));
+  // Grupos con N° PROF en el Excel conservan ese número como folio
+  let lista = Object.entries(grupos).map(([k, rows]) => {
+    const pf = construirProforma(rows, fecha, mes);
+    pf.folioFijo = k.startsWith('N') ? Number(k.slice(1)) : null;
+    return pf;
+  });
   lista = lista.filter(pf => {
     if (semFilt !== 'TODAS' && pf.semana !== Number(semFilt)) return false;
     if (concFilt !== 'TODAS' && !pf._rows.some(r => str(r['CONCEPTO']).toUpperCase() === concFilt)) return false;
@@ -835,9 +839,23 @@ function construirProforma(rows, fecha, mesDefault) {
 }
 
 function renumerarProvisionales() {
-  if (folioUltimo === null) return;
+  const usados = new Set(historial.map(p => p.folio));
+  // 1. Folios que vienen del Excel: se respetan si no existen en la base
+  pfs.forEach(p => {
+    if (p.guardada || !p.folioFijo) return;
+    p.num = p.folioFijo;
+    p._conflicto = usados.has(p.folioFijo);
+    if (p._conflicto) p._sel = false;
+  });
+  pfs.forEach(p => { if (!p.guardada && p.folioFijo) usados.add(p.folioFijo); });
+  // 2. Sin número en el Excel: correlativo automático, saltando los ocupados
   let n = folioUltimo;
-  pfs.forEach(p => { if (!p.guardada) p.num = ++n; });
+  pfs.forEach(p => {
+    if (p.guardada || p.folioFijo) return;
+    if (n === null) { p.num = '—'; return; }
+    do { n++; } while (usados.has(n));
+    p.num = n;
+  });
   if (pfs.length) mostrar();
 }
 
@@ -857,10 +875,11 @@ function mostrar() {
     const d = document.createElement('div');
     d.className = 'pfi' + (pf.guardada ? ' saved' : '');
     d.innerHTML = `
-      ${pf.guardada ? '<span style="width:17px;text-align:center;color:var(--ok);font-weight:800;">✓</span>' : `<input type="checkbox" ${pf._sel ? 'checked' : ''} onchange="pfs[${i}]._sel=this.checked;actualizarBtnGuardar()">`}
-      <div class="pfnum">${pf.num}<small>${pf.guardada ? 'Guardada' : 'Provisional'}</small></div>
+      ${pf.guardada ? '<span style="width:17px;text-align:center;color:var(--ok);font-weight:800;">✓</span>'
+        : `<input type="checkbox" ${pf._sel ? 'checked' : ''} ${pf._conflicto ? 'disabled' : ''} onchange="pfs[${i}]._sel=this.checked;actualizarBtnGuardar()">`}
+      <div class="pfnum" ${pf._conflicto && !pf.guardada ? 'style="color:var(--red)"' : ''}>${pf.num}<small>${pf.guardada ? 'Guardada' : pf.folioFijo ? (pf._conflicto ? 'Ya existe' : 'Folio Excel') : 'Automático'}</small></div>
       <div class="pfinfo">
-        <div class="pfprov">${esc(pf.proveedor)}</div>
+        <div class="pfprov">${esc(pf.proveedor)}${pf._conflicto && !pf.guardada ? ` &nbsp;<span class="badge" style="background:var(--redbg);color:var(--red)">El folio ${pf.folioFijo} ya está guardado</span>` : ''}</div>
         <div class="pfmeta">${esc(pf.concepto || 'FLETE')} · ${semTxt} · ${pf.lineas.length} trayecto(s) · ${pf.guiasDetalle.length} guía(s)</div>
       </div>
       <div class="pftot"><div class="tl">Total</div>$${fmtSD(pf.total)}</div>
@@ -875,7 +894,7 @@ function mostrar() {
   actualizarBtnGuardar();
 }
 
-function marcarTodas(v) { pfs.forEach(p => { if (!p.guardada) p._sel = v; }); mostrar(); }
+function marcarTodas(v) { pfs.forEach(p => { if (!p.guardada && !p._conflicto) p._sel = v; }); mostrar(); }
 function actualizarBtnGuardar() {
   const n = pfs.filter(p => p._sel && !p.guardada).length;
   const b = document.getElementById('btn-save');
@@ -887,12 +906,14 @@ function actualizarBtnGuardar() {
 async function pedirGuardar() {
   const sel = pfs.filter(p => p._sel && !p.guardada);
   if (!sel.length) return;
-  if (folioUltimo === null) { abrirConfig(true); return; }
+  const nFijos = sel.filter(p => p.folioFijo).length, nAuto = sel.length - nFijos;
+  if (nAuto && folioUltimo === null) { abrirConfig(true); return; }
   if (sel.length > 240) { status('Máximo 240 proformas por guardado. Usa el filtro de semana para guardar por partes.', 'err'); return; }
   const tot = sel.reduce((a, p) => a + p.total, 0);
   const ok = await confirmar('Guardar proformas',
     `Vas a guardar <b>${sel.length}</b> proforma(s) por un total de <b>$${fmtMiles(tot)}</b>.<br><br>
-     Se asignarán los folios <b>${folioUltimo + 1}</b> al <b>${folioUltimo + sel.length}</b> (pueden variar si otro usuario guardó recién).<br><br>
+     ${nFijos ? `<b>${nFijos}</b> con el folio que trae el Excel (${resumirFolios(sel.filter(p => p.folioFijo).map(p => p.folioFijo))}).<br>` : ''}
+     ${nAuto ? `<b>${nAuto}</b> con folio automático desde el <b>${sel.find(p => !p.folioFijo).num}</b> (puede variar si otro usuario guardó recién).<br>` : ''}<br>
      ¿Revisaste las tarifas? Una vez guardadas, para corregir deberás eliminar la proforma en el Historial y volver a cargar el Excel.`,
     'Sí, guardar');
   if (!ok) return;
@@ -912,30 +933,37 @@ async function guardarProformas(sel) {
   }
   const user = usuario();
   // 2. Transacción: reserva folios y escribe proformas + detalle
-  const inicio = await db.runTransaction(async tx => {
+  const asign = await db.runTransaction(async tx => {
     const cfgRef = db.doc('config/folio');
     const cfg = await tx.get(cfgRef);
-    if (!cfg.exists) throw new Error('Falta configurar el folio inicial.');
-    const ult = Number(cfg.data().ultimo);
-    const refs = sel.map((p, i) => db.doc('proformas/' + (ult + 1 + i)));
+    const ult = cfg.exists ? Number(cfg.data().ultimo) : null;
+    if (ult === null && sel.some(p => !p.folioFijo)) throw new Error('Falta configurar el folio inicial.');
+    const ocupados = new Set([...historial.map(p => p.folio), ...sel.filter(p => p.folioFijo).map(p => p.folioFijo)]);
+    let n = ult ?? 0;
+    const folios = sel.map(p => {
+      if (p.folioFijo) return p.folioFijo;
+      do { n++; } while (ocupados.has(n));
+      return n;
+    });
+    const refs = folios.map(f => db.doc('proformas/' + f));
     const snaps = await Promise.all(refs.map(r => tx.get(r)));
     const choque = snaps.find(s => s.exists);
-    if (choque) throw new Error('El folio ' + choque.id + ' ya existe. Revisa la configuración de folio.');
+    if (choque) throw new Error('El folio ' + choque.id + ' ya existe en la base. Desmárcalo o elimínalo del historial antes de guardar.');
     sel.forEach((p, i) => {
-      const folio = ult + 1 + i;
+      const folio = folios[i];
       tx.set(refs[i], resumenDoc(p, folio, user));
       tx.set(db.doc('proformas_detalle/' + folio), {
         folio, lineas: p.lineas, guiasDetalle: p.guiasDetalle, rowKeys: p.rowKeys, guias: p.guias
       });
     });
-    tx.update(cfgRef, { ultimo: ult + sel.length, actualizadoEn: FV.serverTimestamp(), actualizadoPor: user });
-    return ult + 1;
+    tx.set(cfgRef, { ultimo: Math.max(ult ?? 0, ...folios), actualizadoEn: FV.serverTimestamp(), actualizadoPor: user }, { merge: true });
+    return folios;
   });
 
   // 3. Índice de registros (anti-duplicados)
   const ops = [];
   sel.forEach((p, i) => {
-    const folio = inicio + i;
+    const folio = asign[i];
     p._rows.forEach(r => ops.push([r._key, {
       folio, proveedor: str(r['PROVEEDOR']), numGD: str(r['NºG/D']), concepto: str(r['CONCEPTO']),
       semana: Number(r['SEMANA']) || 0, creadoEn: FV.serverTimestamp()
@@ -953,17 +981,27 @@ async function guardarProformas(sel) {
 
   // 4. Actualizar estado local
   sel.forEach((p, i) => {
-    p.num = inicio + i; p.guardada = true; p._sel = false;
+    p.num = asign[i]; p.guardada = true; p._conflicto = false; p._sel = false;
     p._rows.forEach(r => r._dupDB = p.num);
     detalleCache[p.num] = { lineas: p.lineas, guiasDetalle: p.guiasDetalle, rowKeys: p.rowKeys, guias: p.guias };
   });
-  folioUltimo = inicio + sel.length - 1;
+  folioUltimo = Math.max(folioUltimo ?? 0, ...asign);
   rowsNuevas = rawRows.filter(r => !r._dupDB && !r._dupArchivo);
   renumerarProvisionales();
   mostrar();
   document.getElementById('btn-xls').classList.remove('hidden');
   await cargarHistorial();
-  status('✓ ' + sel.length + ' proforma(s) guardada(s): folios ' + inicio + ' al ' + folioUltimo + '.', 'ok');
+  status('✓ ' + sel.length + ' proforma(s) guardada(s): folios ' + resumirFolios(asign) + '.', 'ok');
+}
+
+// "10001-10005, 10010" a partir de una lista de números
+function resumirFolios(lista) {
+  const a = [...new Set(lista)].sort((x, y) => x - y), out = [];
+  for (let i = 0; i < a.length; i++) {
+    let j = i; while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+    out.push(i === j ? String(a[i]) : a[i] + '-' + a[j]); i = j;
+  }
+  return out.join(', ');
 }
 
 function resumenDoc(p, folio, user) {
@@ -1152,6 +1190,7 @@ async function eliminarProforma(folio) {
       pfs = pfs.filter(x => x.guardada && x.num !== folio || !x.guardada);
       poblarControles();
     }
+    renumerarProvisionales();
     status('✓ Proforma ' + folio + ' eliminada.' + (rawRows.length ? ' Puedes volver a generar desde el Excel cargado.' : ''), 'ok');
   } catch (e) { alert('Error al eliminar: ' + e.message); }
 }

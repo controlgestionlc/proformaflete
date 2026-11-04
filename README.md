@@ -13,7 +13,10 @@ App web (HTML único) para generar proformas de flete desde el Excel semanal, co
 - **Facturas**: al ingresar se piden las facturas faltantes de proformas cuya semana comienza desde el **01-10-2026** (`FECHA_CORTE_FACTURA`). Las anteriores se pueden registrar desde el historial con el botón 🧾.
 - **Informe Guías a Digitar**, **Resumen PDF** y **Excel con folios** (descarga el mismo Excel con la columna N° PROF completada).
 
-> La columna **N° PROF** del Excel ya no es necesaria. Si viene con valores, solo se usa para separar grupos (por ejemplo, un carguío facturado aparte); el folio siempre lo asigna la app.
+> **Columna N° PROF del Excel**
+> - Si la fila trae N° PROF, la proforma se guarda **con ese mismo número** (útil para cargar semanas anteriores). Si ese folio ya existe en la base, la proforma aparece marcada "Ya existe" y no se puede guardar.
+> - Si viene vacía, la app asigna el folio correlativo automático, saltando los números ya ocupados.
+> - Si un folio del Excel es mayor que el último registrado, el contador avanza hasta ese número.
 
 ## Puesta en marcha
 
