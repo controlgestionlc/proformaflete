@@ -393,12 +393,12 @@ main{max-width:1040px;margin:0 auto;padding:26px 18px 60px;}
    (Consola Firebase → Configuración del proyecto → Tus apps → Web)
    ════════════════════════════════════════════════════════════ */
 const firebaseConfig = {
-  apiKey:            "TU_API_KEY",
-  authDomain:        "TU_PROYECTO.firebaseapp.com",
-  projectId:         "TU_PROYECTO",
-  storageBucket:     "TU_PROYECTO.appspot.com",
-  messagingSenderId: "000000000000",
-  appId:             "1:000000000000:web:xxxxxxxxxxxx"
+  apiKey:            "AIzaSyBkwhsc0P79Ud0bHPABLQjlrlzehE1YCM8",
+  authDomain:        "proformafletes.firebaseapp.com",
+  projectId:         "proformafletes",
+  storageBucket:     "proformafletes.firebasestorage.app",
+  messagingSenderId: "381531789343",
+  appId:             "1:381531789343:web:8bac8b2e38a786ab511d2a"
 };
 // Proformas cuya semana comienza en o después de esta fecha exigen N° de factura
 const FECHA_CORTE_FACTURA = '2026-10-01';
@@ -447,7 +447,20 @@ async function login() {
   const err = document.getElementById('login-err');
   err.textContent = '';
   try { await auth.signInWithEmailAndPassword(em, pw); }
-  catch (e) { err.textContent = 'No se pudo ingresar: revisa correo y contraseña.'; }
+  catch (e) {
+    const msgs = {
+      'auth/invalid-credential': 'Correo o contraseña incorrectos, o el usuario no existe en Authentication → Usuarios.',
+      'auth/wrong-password': 'Contraseña incorrecta.',
+      'auth/user-not-found': 'El usuario no existe. Créalo en Authentication → Usuarios.',
+      'auth/invalid-email': 'El correo no tiene un formato válido.',
+      'auth/operation-not-allowed': 'El método Correo/contraseña no está habilitado en Authentication → Método de acceso.',
+      'auth/configuration-not-found': 'Authentication no está activado en el proyecto. Ve a Authentication → Comenzar.',
+      'auth/unauthorized-domain': 'Este dominio no está autorizado. Agrégalo en Authentication → Configuración → Dominios autorizados.',
+      'auth/too-many-requests': 'Demasiados intentos. Espera unos minutos y vuelve a probar.',
+      'auth/network-request-failed': 'Sin conexión con Firebase. Revisa internet o abre la app desde un servidor (no como archivo local).'
+    };
+    err.textContent = (msgs[e.code] || 'No se pudo ingresar.') + ' [' + (e.code || e.message) + ']';
+  }
 }
 
 async function iniciarApp() {
