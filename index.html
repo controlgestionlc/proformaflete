@@ -213,6 +213,7 @@ main{max-width:1040px;margin:0 auto;padding:26px 18px 60px;}
   </div>
   <div class="status" id="st"></div>
   <div id="dup-panel"></div>
+  <div id="fact-panel"></div>
 
   <div class="toolbar hidden" id="toolbar">
     <button class="tbtn tbtn-danger" onclick="limpiarDatos()">✕ Limpiar datos</button>
@@ -424,6 +425,8 @@ let historial = [];      // resumen de proformas en Firestore
 let detalleCache = {};   // folio -> detalle
 let folioUltimo = null;  // config/folio.ultimo (null = no configurado)
 let pfActual = null;
+let colFact = null, colFechaFact = null; // columnas de factura detectadas en el Excel
+let factPropuestas = [];
 
 /* ═══════════════ AUTENTICACIÓN ═══════════════ */
 document.getElementById('login-logo').src = LOGO;
@@ -559,10 +562,21 @@ function leerArchivo(file) {
       if (!rawRows.length) throw new Error('No se encontraron registros válidos.');
 
       originalAoa = aoa; originalHdrIdx = hdrIdx; originalHdrs = hdrs;
+      // Columnas de factura (ej: "N° FACTURA", "FACTURA", "Nº FACT" / "FECHA FACTURA")
+      const H = h => h.toUpperCase();
+      colFechaFact = hdrs.find(h => /FECHA/.test(H(h)) && /FACT/.test(H(h))) || null;
+      colFact = hdrs.find(h => /FACT/.test(H(h)) && !/FECHA|MONTO|VALOR|TOTAL/.test(H(h))) || null;
+      rawRows.forEach(r => {
+        const f = colFact ? str(r[colFact]).replace(/\.0+$/, '') : '';
+        r._fact = (f && !/^(NAN|0|-|S\/N|SIN)$/i.test(f)) ? f : '';
+        const fd = colFechaFact ? parseFechaFlexible(str(r[colFechaFact])) : null;
+        r._fechaFact = fd ? isoFecha(fd) : '';
+      });
       calcularRangosSemana();
 
       status('Validando contra registros guardados…', 'info');
       await marcarDuplicados();
+      detectarFacturasExcel();
 
       pfs = [];
       document.getElementById('pfsec').classList.remove('on');
@@ -1004,6 +1018,71 @@ function resumirFolios(lista) {
   return out.join(', ');
 }
 
+/* ═══════════════ FACTURAS DESDE EL EXCEL ═══════════════ */
+// Factura única de un grupo de filas (si hay más de una distinta, no asigna)
+function facturaDeFilas(rows) {
+  const fs = [...new Set((rows || []).map(r => r._fact).filter(Boolean))];
+  if (fs.length !== 1) return { nFactura: '', fechaFactura: '' };
+  const fecha = (rows.find(r => r._fact === fs[0] && r._fechaFact) || {})._fechaFact || '';
+  return { nFactura: fs[0], fechaFactura: fecha };
+}
+
+function detectarFacturasExcel() {
+  factPropuestas = [];
+  const panel = document.getElementById('fact-panel');
+  panel.innerHTML = '';
+  if (!colFact) return;
+  // Filas que pertenecen a proformas ya guardadas: por registro duplicado o por N° PROF existente
+  const folHist = new Map(historial.map(p => [p.folio, p]));
+  const porFolio = {};
+  rawRows.forEach(r => {
+    let folio = r._dupDB;
+    if (!folio) { const n = Number(str(r['N° PROF'])); if (n > 0 && folHist.has(n)) folio = n; }
+    if (!folio || !folHist.has(folio)) return;
+    (porFolio[folio] = porFolio[folio] || []).push(r);
+  });
+  const conflictos = [];
+  Object.entries(porFolio).forEach(([fol, rows]) => {
+    const p = folHist.get(Number(fol));
+    const distintas = [...new Set(rows.map(r => r._fact).filter(Boolean))];
+    if (!distintas.length) return;
+    if (distintas.length > 1) { conflictos.push({ p, motivo: 'trae varias facturas: ' + distintas.join(', ') }); return; }
+    const { nFactura, fechaFactura } = facturaDeFilas(rows);
+    if (p.nFactura === nFactura && (!fechaFactura || p.fechaFactura === fechaFactura)) return; // ya está igual
+    if (p.nFactura && p.nFactura !== nFactura) { conflictos.push({ p, motivo: 'tiene ' + p.nFactura + ' y el Excel dice ' + nFactura }); return; }
+    factPropuestas.push({ p, nFactura, fechaFactura: fechaFactura || p.fechaFactura || '' });
+  });
+  if (!factPropuestas.length && !conflictos.length) return;
+  factPropuestas.sort((a, b) => a.p.folio - b.p.folio);
+  panel.innerHTML = `<div class="dup-box okb" style="border-left-color:var(--gl)">
+    <h4 style="color:var(--gl)">🧾 Facturas encontradas en el Excel (columna "${esc(colFact)}")</h4>
+    ${factPropuestas.length ? `<div><b>${factPropuestas.length}</b> proforma(s) guardada(s) se pueden completar con su factura:</div>
+      <ul>${factPropuestas.slice(0, 40).map(x => `<li>Proforma <b>${x.p.folio}</b> · ${esc(x.p.proveedor)} → factura <b>${esc(x.nFactura)}</b>${x.fechaFactura ? ' (' + fmtFecha(new Date(x.fechaFactura + 'T12:00:00')) + ')' : ''}</li>`).join('')}${factPropuestas.length > 40 ? '<li>…</li>' : ''}</ul>
+      <button class="tbtn" style="margin-top:8px;border-color:var(--gl);color:var(--gl)" onclick="aplicarFacturasExcel()">Asignar ${factPropuestas.length} factura(s)</button>` : ''}
+    ${conflictos.length ? `<div style="margin-top:8px;color:var(--red)"><b>${conflictos.length}</b> no se asignan automáticamente (revísalas en el Historial):</div>
+      <ul>${conflictos.map(c => `<li>Proforma <b>${c.p.folio}</b> · ${esc(c.p.proveedor)}: ${esc(c.motivo)}</li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+async function aplicarFacturasExcel() {
+  if (!factPropuestas.length) return;
+  const ok = await confirmar('Asignar facturas', `Se registrará la factura en <b>${factPropuestas.length}</b> proforma(s) guardada(s) que hoy no la tienen. ¿Continuar?`, 'Sí, asignar');
+  if (!ok) return;
+  try {
+    for (let i = 0; i < factPropuestas.length; i += 450) {
+      const b = db.batch();
+      factPropuestas.slice(i, i + 450).forEach(x => b.update(db.doc('proformas/' + x.p.folio), {
+        nFactura: x.nFactura, fechaFactura: x.fechaFactura, facturaRegistradaEn: FV.serverTimestamp(), facturaRegistradaPor: usuario()
+      }));
+      await b.commit();
+    }
+    factPropuestas.forEach(x => { x.p.nFactura = x.nFactura; x.p.fechaFactura = x.fechaFactura; });
+    const n = factPropuestas.length;
+    renderHistorial(); actualizarBadge(); detectarFacturasExcel();
+    status('✓ ' + n + ' factura(s) asignada(s) desde el Excel.', 'ok');
+  } catch (e) { alert('Error al asignar facturas: ' + e.message); }
+}
+
 function resumenDoc(p, folio, user) {
   return {
     folio, proveedor: p.proveedor, concepto: p.concepto, semana: p.semana, semanaRango: p.semanaRango,
@@ -1011,7 +1090,7 @@ function resumenDoc(p, folio, user) {
     neto: Math.round(p.neto), iva: Math.round(p.iva), total: Math.round(p.total),
     nLineas: p.lineas.length, nGuias: p.guiasDetalle.length,
     fecha: p.fecha, mes: p.mes, fechaRef: p.fechaRef, fechaHasta: p.fechaHasta,
-    nFactura: '', fechaFactura: '',
+    ...facturaDeFilas(p._rows),
     archivo: nombreArchivo, creadoEn: FV.serverTimestamp(), creadoPor: user
   };
 }
@@ -1034,6 +1113,8 @@ function limpiarDatos() {
   document.getElementById('fi').value = '';
   document.getElementById('st').className = 'status';
   document.getElementById('dup-panel').innerHTML = '';
+  document.getElementById('fact-panel').innerHTML = '';
+  colFact = colFechaFact = null; factPropuestas = [];
   document.getElementById('ctrl').classList.remove('on');
   document.getElementById('cards').classList.remove('on');
   document.getElementById('pfsec').classList.remove('on');
@@ -1191,6 +1272,7 @@ async function eliminarProforma(folio) {
       poblarControles();
     }
     renumerarProvisionales();
+    if (rawRows.length) detectarFacturasExcel();
     status('✓ Proforma ' + folio + ' eliminada.' + (rawRows.length ? ' Puedes volver a generar desde el Excel cargado.' : ''), 'ok');
   } catch (e) { alert('Error al eliminar: ' + e.message); }
 }
