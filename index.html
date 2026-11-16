@@ -304,9 +304,10 @@ main{max-width:1040px;margin:0 auto;padding:26px 18px 60px;}
   <div class="pfsec on">
     <div class="sectit">Proformas Registradas</div>
     <div class="pflist" id="hlist"></div>
-    <div class="action-row">
+    <div class="action-row" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
       <button class="action-btn" onclick="imprimirHistorialFiltrado()">🖨 Imprimir proformas filtradas</button>
       <button class="action-btn" onclick="pdfHistorialFiltrado(this)">📁 Guardar filtradas en PDF</button>
+      <button class="action-btn" onclick="abrirGuiasHistorial(this)">📋 Informe Guías a Digitar</button>
       <button class="action-btn" onclick="generarResumenPDF(historialFiltrado())">▦ Resumen PDF filtrado</button>
     </div>
   </div>
@@ -381,8 +382,9 @@ main{max-width:1040px;margin:0 auto;padding:26px 18px 60px;}
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
         <div class="cg" style="min-width:120px;"><label>Semana</label><select id="guias-sem"><option value="TODAS">Todas</option></select></div>
         <div class="cg" style="min-width:100px;"><label>UM</label><div id="guias-um-wrap" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1.5px solid var(--bo);border-radius:6px;background:var(--wh);min-height:36px;"></div></div>
-        <div class="cg" style="min-width:100px;"><label>FLC</label><select id="guias-flc"><option value="TODAS">Todas</option></select></div>
+        <div class="cg" style="min-width:100px;" id="guias-flc-wrap"><label>FLC</label><select id="guias-flc"><option value="TODAS">Todas</option></select></div>
       </div>
+      <div class="note" id="guias-nota" style="margin:-4px 0 10px;"></div>
       <div style="font-size:.75rem;color:var(--mu);" id="guias-count"></div>
     </div>
     <div class="mfoot">
@@ -1663,92 +1665,157 @@ tfoot td{padding:8px 10px;font-weight:800;color:#fff;font-family:'Barlow Condens
   w.document.close();
 }
 
-/* ═══════════════ INFORME GUÍAS A DIGITAR (sobre el Excel cargado) ═══════════════ */
-function abrirModalGuias() {
-  if (!rawRows.length) { status('Primero carga un archivo Excel.', 'err'); return; }
-  const sems = [...new Set(rawRows.map(r => str(r['SEMANA'])).filter(Boolean))].sort((a, b) => Number(a) - Number(b));
-  const ums  = [...new Set(rawRows.map(r => str(r['UM'])).filter(Boolean))].sort();
-  const flcs = [...new Set(rawRows.map(r => str(r['FLC'])).filter(v => v && v !== 'nan'))].sort();
-  const semSel = document.getElementById('guias-sem');
-  semSel.innerHTML = '<option value="TODAS">Todas</option>' + sems.map(s => {
-    const rg = fmtRango(Number(s));
-    return `<option value="${esc(s)}">Semana ${esc(s)}${rg ? ' (' + rg + ')' : ''}</option>`;
-  }).join('');
-  const umWrap = document.getElementById('guias-um-wrap');
-  umWrap.innerHTML = ums.map(u => `<label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer;"><input type="checkbox" value="${esc(u)}" checked onchange="actualizarConteoGuias()"> ${esc(u)}</label>`).join('');
-  document.getElementById('guias-flc').innerHTML = '<option value="TODAS">Todas</option>' + flcs.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
-  ['guias-sem', 'guias-flc'].forEach(id => document.getElementById(id).onchange = actualizarConteoGuias);
-  actualizarConteoGuias();
-  document.getElementById('ov-guias').classList.add('open');
-}
-function filtrarGuias() {
-  const sem = document.getElementById('guias-sem').value;
-  const flc = document.getElementById('guias-flc').value;
-  const ums = [...document.querySelectorAll('#guias-um-wrap input:checked')].map(c => c.value);
-  return rawRows.filter(r => {
-    if (sem !== 'TODAS' && str(r['SEMANA']) !== sem) return false;
-    if (ums.length && !ums.includes(str(r['UM']))) return false;
-    if (flc !== 'TODAS' && str(r['FLC']) !== flc) return false;
-    return true;
-  });
-}
-function actualizarConteoGuias() { document.getElementById('guias-count').textContent = filtrarGuias().length + ' registro(s) encontrado(s)'; }
+/* ═══════════════ INFORME GUÍAS A DIGITAR ═══════════════
+   Origen 'excel': filas del Excel cargado (pestaña Generar)
+   Origen 'hist' : detalle guardado de las proformas filtradas en el Historial */
+let guiasOrigen = 'excel', guiasFilas = [], guiasRangos = {};
+
 function precioFleteFila(r) {
   const pfCol = num_(r['PRECIO FLETE']), vF = num_(r['VALOR FLETE']), vC = num_(r['VALOR CARGUI']);
   const c = str(r['CARGUIO']).toUpperCase();
   return pfCol > 0 ? pfCol : ((c === 'SI' || c === 'S') ? vF + vC : vF);
 }
+
+function abrirModalGuias() {
+  if (!rawRows.length) { status('Primero carga un archivo Excel.', 'err'); return; }
+  guiasOrigen = 'excel';
+  guiasRangos = {};
+  guiasFilas = rawRows.map(r => ({
+    prov: str(r['PROVEEDOR']), sem: str(r['SEMANA']), um: str(r['UM']), flc: str(r['FLC']),
+    patente: str(r['Camión/ Carro']), numGD: str(r['NºG/D']), fecha: str(r['Fecha Ing']),
+    gmm: str(r['NºGMM']), eepp: str(r['EE/PP']), destino: str(r['Nombre Destino']),
+    rol: str(r['Rol Predio']), cant: num_(r['MR Recep.']), precio: precioFleteFila(r), folio: ''
+  }));
+  Object.keys(semanaRangos).forEach(k => guiasRangos[k] = fmtRango(Number(k)));
+  prepararModalGuias('');
+}
+
+async function abrirGuiasHistorial(btn) {
+  const lista = historialFiltrado();
+  if (!lista.length) { status('No hay proformas para los filtros seleccionados.', 'err'); return; }
+  const txtOrig = btn ? btn.innerHTML : '';
+  if (btn) btn.textContent = '⏳ Cargando detalle…';
+  try {
+    const completas = [];
+    for (let i = 0; i < lista.length; i += 10) {
+      status('Cargando detalle de guías ' + Math.min(i + 10, lista.length) + ' de ' + lista.length + '…', 'info');
+      completas.push(...await Promise.all(lista.slice(i, i + 10).map(p => obtenerProformaCompleta(p.folio))));
+    }
+    guiasOrigen = 'hist';
+    guiasRangos = {};
+    guiasFilas = [];
+    completas.forEach(pf => {
+      if (pf.semanaRango) guiasRangos[String(pf.semana)] = pf.semanaRango;
+      (pf.guiasDetalle || []).forEach(g => guiasFilas.push({
+        prov: pf.proveedor, sem: String(pf.semana), um: g.um || '', flc: '',
+        patente: g.patente || '', numGD: g.numGD || '', fecha: g.fecha || '',
+        gmm: g.gmm || '', eepp: g.eepp || '', destino: g.destino || '',
+        rol: g.rol || '', cant: Number(g.cant) || 0, precio: Number(g.precioFlete) || 0, folio: pf.folio
+      }));
+    });
+    if (!guiasFilas.length) { status('Las proformas filtradas no tienen detalle de guías.', 'err'); return; }
+    const mes = document.getElementById('h-mes').value;
+    const filtros = [mes !== 'TODAS' ? 'Mes: ' + mes : '', document.getElementById('h-sem').value !== 'TODAS' ? 'Semana: ' + document.getElementById('h-sem').value : ''].filter(Boolean).join(' · ');
+    status('✓ Detalle cargado: ' + guiasFilas.length + ' guía(s) de ' + completas.length + ' proforma(s).', 'ok');
+    prepararModalGuias(`Desde el historial: <b>${completas.length}</b> proforma(s) guardada(s)${filtros ? ' (' + esc(filtros) + ')' : ''}. Refleja las correcciones vigentes.`);
+  } catch (e) {
+    status('Error al cargar el detalle: ' + e.message, 'err');
+  } finally {
+    if (btn) btn.innerHTML = txtOrig;
+  }
+}
+
+function prepararModalGuias(nota) {
+  const sems = [...new Set(guiasFilas.map(r => r.sem).filter(Boolean))].sort((a, b) => Number(a) - Number(b));
+  const ums  = [...new Set(guiasFilas.map(r => r.um).filter(Boolean))].sort();
+  const flcs = [...new Set(guiasFilas.map(r => r.flc).filter(v => v && v !== 'nan'))].sort();
+  document.getElementById('guias-sem').innerHTML = '<option value="TODAS">Todas</option>' + sems.map(s => {
+    const rg = guiasRangos[s];
+    return `<option value="${esc(s)}">Semana ${esc(s)}${rg ? ' (' + esc(rg) + ')' : ''}</option>`;
+  }).join('');
+  document.getElementById('guias-um-wrap').innerHTML = ums.map(u => `<label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer;"><input type="checkbox" value="${esc(u)}" checked onchange="actualizarConteoGuias()"> ${esc(u)}</label>`).join('');
+  document.getElementById('guias-flc').innerHTML = '<option value="TODAS">Todas</option>' + flcs.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
+  document.getElementById('guias-flc-wrap').classList.toggle('hidden', guiasOrigen === 'hist');
+  document.getElementById('guias-nota').innerHTML = nota || '';
+  ['guias-sem', 'guias-flc'].forEach(id => document.getElementById(id).onchange = actualizarConteoGuias);
+  actualizarConteoGuias();
+  document.getElementById('ov-guias').classList.add('open');
+}
+
+function filtrarGuias() {
+  const sem = document.getElementById('guias-sem').value;
+  const flc = document.getElementById('guias-flc').value;
+  const ums = [...document.querySelectorAll('#guias-um-wrap input:checked')].map(c => c.value);
+  return guiasFilas.filter(r => {
+    if (sem !== 'TODAS' && r.sem !== sem) return false;
+    if (ums.length && !ums.includes(r.um)) return false;
+    if (guiasOrigen === 'excel' && flc !== 'TODAS' && r.flc !== flc) return false;
+    return true;
+  });
+}
+function actualizarConteoGuias() { document.getElementById('guias-count').textContent = filtrarGuias().length + ' registro(s) encontrado(s)'; }
+
 function imprimirGuias() {
   const rows = filtrarGuias();
   if (!rows.length) { status('No hay registros con los filtros seleccionados.', 'err'); return; }
+  const esHist = guiasOrigen === 'hist';
   const sem = document.getElementById('guias-sem').value;
   const flc = document.getElementById('guias-flc').value;
   const umChecks = [...document.querySelectorAll('#guias-um-wrap input')];
   const umsSel = umChecks.filter(c => c.checked).map(c => c.value);
-  const semanasEnDatos = [...new Set(rows.map(r => str(r['SEMANA'])).filter(Boolean))];
+  const semanasEnDatos = [...new Set(rows.map(r => r.sem).filter(Boolean))];
   const semUnica = sem !== 'TODAS' ? sem : (semanasEnDatos.length === 1 ? semanasEnDatos[0] : null);
   let semTitulo, semCard, rangoCard;
   if (semUnica) {
-    const rg = fmtRango(Number(semUnica));
-    semTitulo = 'Semana ' + semUnica + (rg ? ' &nbsp;·&nbsp; ' + rg : '');
-    semCard = 'Semana ' + semUnica; rangoCard = rg || '—';
+    const rg = guiasRangos[semUnica] || '';
+    semTitulo = 'Semana ' + esc(semUnica) + (rg ? ' &nbsp;·&nbsp; ' + esc(rg) : '');
+    semCard = 'Semana ' + esc(semUnica); rangoCard = esc(rg) || '—';
   } else {
     semTitulo = 'Todas las semanas'; semCard = 'Todas';
     rangoCard = semanasEnDatos.length > 1 ? semanasEnDatos.length + ' semanas' : 'Todas';
   }
-  const subtitulo = [umsSel.length !== umChecks.length ? 'UM: ' + umsSel.join(', ') : '', flc !== 'TODAS' ? 'FLC: ' + flc : ''].filter(Boolean).join(' &nbsp;|&nbsp; ') || 'Todos los filtros';
+  const mesHist = esHist ? document.getElementById('h-mes').value : 'TODAS';
+  const subtitulo = [
+    esHist ? 'Desde historial' : '',
+    mesHist !== 'TODAS' ? 'Mes: ' + esc(mesHist) : '',
+    umsSel.length !== umChecks.length ? 'UM: ' + esc(umsSel.join(', ')) : '',
+    !esHist && flc !== 'TODAS' ? 'FLC: ' + esc(flc) : ''
+  ].filter(Boolean).join(' &nbsp;|&nbsp; ') || 'Todos los filtros';
 
   const grupos = {};
-  rows.forEach(r => { const p = str(r['PROVEEDOR']); (grupos[p] = grupos[p] || []).push(r); });
+  rows.forEach(r => (grupos[r.prov] = grupos[r.prov] || []).push(r));
   const provs = Object.keys(grupos).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
   provs.forEach(p => grupos[p].sort((a, b) => {
-    const c = str(a['Camión/ Carro']).localeCompare(str(b['Camión/ Carro']), 'es', { numeric: true, sensitivity: 'base' });
+    const c = a.patente.localeCompare(b.patente, 'es', { numeric: true, sensitivity: 'base' });
     if (c) return c;
-    const fa = parseFechaFlexible(str(a['Fecha Ing'])), fb = parseFechaFlexible(str(b['Fecha Ing']));
+    const fa = parseFechaFlexible(a.fecha), fb = parseFechaFlexible(b.fecha);
     return (fa && fb) ? fa - fb : 0;
   }));
+  const nCols = esHist ? 11 : 10;
   let k = 0;
   const filas = provs.map(prov => {
     const pr = grupos[prov];
-    const sub = pr.reduce((a, r) => a + num_(r['MR Recep.']), 0);
+    const sub = pr.reduce((a, r) => a + r.cant, 0);
     return pr.map(r => {
-      const fp = parseFechaFlexible(str(r['Fecha Ing']));
+      const fp = parseFechaFlexible(r.fecha);
       return `<tr style="background:${k++ % 2 ? '#fafcfb' : '#fff'}">
         <td style="font-weight:700;color:#3a4a42">${esc(prov)}</td>
-        <td style="text-align:center;font-weight:700">${esc(str(r['Camión/ Carro']))}</td>
-        <td style="text-align:center">${esc(str(r['NºG/D']))}</td>
-        <td style="text-align:center">${fp ? fmtFecha(fp) : esc(str(r['Fecha Ing']).substring(0, 10))}</td>
-        <td style="text-align:center">${esc(str(r['NºGMM']))}</td>
-        <td style="text-align:center">${esc(str(r['EE/PP']))}</td>
-        <td>${esc(str(r['Nombre Destino']))}</td>
-        <td style="text-align:center">${esc(str(r['Rol Predio']))}</td>
-        <td style="text-align:right;font-weight:600">${fmtD2(num_(r['MR Recep.']))}</td>
-        <td style="text-align:right;font-weight:600">${fmtMiles(precioFleteFila(r))}</td></tr>`;
-    }).join('') + `<tr style="background:#fef3e2;"><td colspan="8" style="text-align:right;font-weight:700;font-size:.75rem;border-top:1.5px solid #d6d3d1;">Subtotal: ${esc(prov)}</td>
+        ${esHist ? `<td style="text-align:center;font-weight:700;color:#c2670a">${esc(r.folio)}</td>` : ''}
+        <td style="text-align:center;font-weight:700">${esc(r.patente)}</td>
+        <td style="text-align:center">${esc(r.numGD)}</td>
+        <td style="text-align:center">${fp ? fmtFecha(fp) : esc(r.fecha.substring(0, 10))}</td>
+        <td style="text-align:center">${esc(r.gmm)}</td>
+        <td style="text-align:center">${esc(r.eepp)}</td>
+        <td>${esc(r.destino)}</td>
+        <td style="text-align:center">${esc(r.rol)}</td>
+        <td style="text-align:right;font-weight:600">${fmtD2(r.cant)}</td>
+        <td style="text-align:right;font-weight:600">${fmtMiles(r.precio)}</td></tr>`;
+    }).join('') + `<tr style="background:#fef3e2;"><td colspan="${nCols - 2}" style="text-align:right;font-weight:700;font-size:.75rem;border-top:1.5px solid #d6d3d1;">Subtotal: ${esc(prov)}</td>
       <td style="text-align:right;font-weight:800;color:#c2670a;border-top:1.5px solid #d6d3d1;">${fmtD2(sub)}</td><td style="border-top:1.5px solid #d6d3d1;"></td></tr>`;
   }).join('');
-  const totalMR = rows.reduce((a, r) => a + num_(r['MR Recep.']), 0);
-  const totalNeto = rows.reduce((a, r) => a + Math.round(num_(r['MR Recep.']) * precioFleteFila(r)), 0);
+  const totalMR = rows.reduce((a, r) => a + r.cant, 0);
+  const totalNeto = rows.reduce((a, r) => a + Math.round(r.cant * r.precio), 0);
+  const izq = esHist ? [1, 8] : [1, 7], der = esHist ? [10, 11] : [9, 10];
 
   const w = window.open('', '_blank', 'width=1100,height=750');
   w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Guías a Digitar</title>
@@ -1768,8 +1835,8 @@ body{font-family:'Barlow',sans-serif;background:#fff;color:#111;padding:16px 22p
 table{width:100%;border-collapse:collapse;font-size:.78rem;}
 thead tr{background:#3a3532;}
 thead th{padding:7px 8px;font-size:.65rem;font-weight:700;text-transform:uppercase;color:#fff;white-space:nowrap;text-align:center;}
-thead th:nth-child(1),thead th:nth-child(7){text-align:left;}
-thead th:nth-child(9),thead th:nth-child(10){text-align:right;}
+thead th:nth-child(${izq[0]}),thead th:nth-child(${izq[1]}){text-align:left;}
+thead th:nth-child(${der[0]}),thead th:nth-child(${der[1]}){text-align:right;}
 tbody tr{border-bottom:1px solid #d6d3d1;}
 tbody td{padding:5px 8px;border-right:1px solid #e8e5e3;font-size:.77rem;color:#2c3e35;}
 .g-footer{margin-top:14px;padding-top:8px;border-top:1.5px solid #d6d3d1;display:flex;justify-content:space-between;font-size:.68rem;color:#78716c;}
@@ -1785,7 +1852,7 @@ tbody td{padding:5px 8px;border-right:1px solid #e8e5e3;font-size:.77rem;color:#
   <div class="g-card"><div class="cl">Semana</div><div class="cv">${semCard}</div><div class="cv-sub">${rangoCard}</div></div>
   <div class="g-card"><div class="cl">Total Neto Fletes</div><div class="cv">$${fmtMiles(totalNeto)}</div></div>
 </div>
-<table><thead><tr><th>Proveedor</th><th>Camión / Carro</th><th>N° G/D</th><th>Fecha Ing.</th><th>N° GMM</th><th>EE/PP</th><th>Nombre Destino</th><th>Rol Predio</th><th>Cantidad</th><th>Precio Flete</th></tr></thead>
+<table><thead><tr><th>Proveedor</th>${esHist ? '<th>N° Prof.</th>' : ''}<th>Camión / Carro</th><th>N° G/D</th><th>Fecha Ing.</th><th>N° GMM</th><th>EE/PP</th><th>Nombre Destino</th><th>Rol Predio</th><th>Cantidad</th><th>Precio Flete</th></tr></thead>
 <tbody>${filas}</tbody></table>
 <div style="display:flex;justify-content:flex-end;margin-top:6px;"><div style="background:#292524;color:#fff;border-radius:6px;padding:7px 16px;font-family:'Barlow Condensed',sans-serif;font-weight:700;display:flex;gap:20px;">
   <span style="color:#d4a574;text-transform:uppercase;font-size:.78rem;">Total General</span><span>${fmtD2(totalMR)}</span></div></div>
